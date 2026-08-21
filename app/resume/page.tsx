@@ -1,10 +1,12 @@
 "use client";
-import { useCallback, useState } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { formatFileSize } from "@/lib/utils";
 import { useSession } from "@/hooks/useSession";
+import { useCareerPilotStore } from "@/stores/careerpilot-store";
+import { normalizeLyzrResponse } from "@/lib/response-normalizer";
 import { Upload, FileText, X, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 
@@ -12,10 +14,18 @@ type Status = "idle" | "uploading" | "processing" | "done" | "error";
 
 export default function ResumePage() {
   const { sessionId, userId } = useSession();
+  const { candidate, setCandidateAnalysis, setJobMatches, addMessage } = useCareerPilotStore();
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!result && candidate.resumeAnalysis) {
+      setResult(candidate.resumeAnalysis);
+      setStatus("done");
+    }
+  }, [candidate.resumeAnalysis, result]);
 
   const onDrop = useCallback((accepted: File[]) => {
     if (accepted[0]) { setFile(accepted[0]); setStatus("idle"); setError(null); setResult(null); }
@@ -48,6 +58,16 @@ export default function ResumePage() {
       const data = await res.json();
       console.log("[DIAG][FE] /api/resume body", { ok: res.ok, hasResponse: !!data.response, error: data.error, code: (data as { code?: string }).code });
       if (!res.ok) throw new Error(data.details ? `${data.error} (${(data as { code?: string }).code ?? ""})` : data.error || "Upload failed");
+      const resumeText: string = (data.resumeText as string) || file.name;
+      // Central source of truth (requirement 2): one analysis = whole app knows
+      setCandidateAnalysis({ fileName: file.name, resumeText, analysis: data.response as string });
+      // If analysis already contains jobs/ATS, hydrate those too (deterministic, no invention)
+      const norm = normalizeLyzrResponse(data.response as string);
+      if (norm.jobs.length) setJobMatches(norm.jobs);
+      // Also seed chat history so Chat knows analysis happened
+      const ts = Date.now();
+      addMessage({ id: crypto.randomUUID(), role: "user", content: `[Resume uploaded: ${file.name}] Please analyze my resume.`, createdAt: ts });
+      addMessage({ id: crypto.randomUUID(), role: "assistant", content: data.response as string, createdAt: ts + 1 });
       setResult(data.response);
       setStatus("done");
     } catch (e) {

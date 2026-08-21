@@ -104,6 +104,30 @@ function extractATS(raw: string): ATSReport | undefined {
   };
 }
 
+export function extractCandidateMetrics(raw: string): {
+  skills: string[];
+  skillsCount: number;
+  strengthsCount: number;
+  gapsCount: number;
+  atsScore?: number;
+} {
+  // deterministic, no invention — only parse what Lyzr returned
+  const skillsBlock = raw.match(/Skills?\s*(?:detected)?\s*[:\-]\s*([^\n]+)/i)?.[1] ||
+    raw.match(/###\s*Skills\s*\n([\s\S]{0,600})/i)?.[1] ||
+    "";
+  const skills = skillsBlock
+    .split(/[,;|\n•\-]/)
+    .map((s) => s.trim().replace(/^\*\*|\*\*$/g, "").trim())
+    .filter((s) => s.length > 1 && s.length < 40 && !/^(and|with|the|for)$/i.test(s))
+    .slice(0, 30);
+  // Fallback: count bullet items under Skills section
+  let strengthsCount = (raw.match(/Strengths/gi) || []).length ? (raw.split(/Strengths/i)[1]?.match(/^\s*[-•*]\s+.+/gm) || []).length : 0;
+  const gapsSection = raw.split(/Gaps|Weaknesses|Missing Skills/i)[1] || "";
+  const gapsCount = (gapsSection.match(/^\s*[-•*]\s+.+/gm) || []).length;
+  const atsScore = raw.match(/ATS\s*Score\s*[:\-]?\s*(\d{1,3})/i) ? parseInt(raw.match(/ATS\s*Score\s*[:\-]?\s*(\d{1,3})/i)![1], 10) : undefined;
+  return { skills, skillsCount: skills.length, strengthsCount, gapsCount, atsScore };
+}
+
 export function normalizeLyzrResponse(raw: string): NormalizedData {
   const trimmed = raw?.trim() ?? "";
   try {

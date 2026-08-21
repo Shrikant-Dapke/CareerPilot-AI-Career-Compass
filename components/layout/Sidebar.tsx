@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useCareerPilotStore } from "@/stores/careerpilot-store";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -32,6 +33,9 @@ const nav = [
 export function Sidebar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const candidate = useCareerPilotStore((s) => s.candidate);
+  const jobMatches = useCareerPilotStore((s) => s.jobMatches);
+  const hasProfile = !!candidate.resumeAnalysis;
 
   const content = (
     <div className="flex h-full flex-col">
@@ -44,6 +48,12 @@ export function Sidebar() {
           <div className="text-[11px] text-zinc-400">Career Compass Director</div>
         </div>
       </div>
+      {hasProfile && (
+        <div className="mx-3 mt-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2">
+          <div className="text-xs font-medium text-emerald-200">Resume analyzed ✓</div>
+          <div className="truncate text-[11px] text-zinc-400">{candidate.resumeFileName} • {jobMatches.length} matches</div>
+        </div>
+      )}
 
       <nav className="flex-1 space-y-1 p-3">
         {nav.map((item) => {
@@ -87,6 +97,7 @@ export function Sidebar() {
             <Sparkles className="h-4 w-4 text-black" />
           </div>
           <span className="text-sm font-semibold">CareerPilot AI</span>
+          {hasProfile && <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] text-emerald-200">✓ Resume</span>}
         </div>
         <button
           aria-label="Toggle navigation"

@@ -8,26 +8,25 @@ export const runtime = "nodejs";
 const MAX_BYTES = 10 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
-  void req.headers.get("x-forwarded-for");
-  console.log("[DIAG] /api/resume: hit", { hasDemo: hasDemoMode() });
+  const start = Date.now();
+  console.log("[API/resume] hit", { hasDemo: hasDemoMode() });
 
   let form: FormData;
   try {
     form = await req.formData();
   } catch (e) {
-    console.error("[DIAG] /api/resume: formData parse failed", e instanceof Error ? e.message : String(e));
+    console.error("[API/resume] formData parse failed", e instanceof Error ? e.message : String(e));
     return NextResponse.json({ error: "Invalid upload. Use multipart form-data with file." }, { status: 400 });
   }
 
   const file = form.get("file");
   const session_id = form.get("session_id");
   const user_id = form.get("user_id");
-  console.log("[DIAG] /api/resume: fields", {
+  console.log("[API/resume] fields", {
     fileType: file instanceof File ? (file as File).type : typeof file,
     fileName: file instanceof File ? (file as File).name : String(file).slice(0, 50),
     fileSize: file instanceof File ? (file as File).size : 0,
     session_id: typeof session_id === "string" ? (session_id as string).slice(0, 8) : String(session_id).slice(0, 20),
-    user_id: typeof user_id === "string" ? (user_id as string).slice(0, 8) : String(user_id).slice(0, 20),
   });
 
   if (!(file instanceof File)) {
@@ -57,9 +56,9 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    console.log("[DIAG] /api/resume: reading buffer", { name, mime, size: file.size });
+    console.log("[API/resume] reading buffer", { name, mime, size: file.size });
     const buffer = Buffer.from(await file.arrayBuffer());
-    console.log("[DIAG] /api/resume: buffer len", buffer.length, "calling sendResumeToDirector");
+    console.log("[API/resume] buffer len", buffer.length, "-> Lyzr");
     const result = await sendResumeToDirector({
       fileName: name,
       fileBuffer: buffer,
@@ -67,22 +66,21 @@ export async function POST(req: NextRequest) {
       session_id,
       user_id,
     });
-    console.log("[DIAG] /api/resume: success, responseLen", result.response.length);
-    return NextResponse.json(result);
+    console.log("[API/resume] success", { latencyMs: Date.now() - start, respLen: result.response.length });
+    // Include extracted preview length for client persistence without re-extracting
+    return NextResponse.json({ ...result, fileName: name });
   } catch (err) {
-    console.error("[DIAG] /api/resume: caught error", err instanceof Error ? err.message : String(err), err instanceof Error ? (err as unknown as { stack?: string }).stack?.slice(0, 800) : "");
+    const latencyMs = Date.now() - start;
+    console.error("[API/resume] error", latencyMs + "ms", err instanceof Error ? err.message : String(err));
     if (err instanceof LyzrError) {
-      console.error("[DIAG] /api/resume: LyzrError", err.code, err.status, err.details.slice(0, 500));
+      console.error("[API/resume] LyzrError", err.code, err.status, err.details.slice(0, 500));
       const status = err.status >= 400 && err.status < 600 ? err.status : 502;
-      // Include details in dev for debugging without leaking key
       return NextResponse.json({ error: err.message, code: err.code, details: err.details.slice(0, 500) }, { status });
     }
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("Missing/invalid env")) {
-      console.error("[DIAG] /api/resume: missing env");
       return NextResponse.json({ error: "Server is misconfigured. Missing LYZR_API_KEY or LYZR_AGENT_ID." }, { status: 500 });
     }
-    console.error("[DIAG] /api/resume: generic fallback", msg.slice(0, 500));
-    return NextResponse.json({ error: `Resume processing failed: ${msg.slice(0, 200)}` }, { status: 500 });
+    return NextResponse.json({ error: `Resume processing failed: ${msg.slice(0, 200)}`, code: "UNKNOWN" }, { status: 500 });
   }
 }

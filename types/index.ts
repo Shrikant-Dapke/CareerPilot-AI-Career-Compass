@@ -30,3 +30,23 @@ export type NormalizedJob = {
   url?: string;
   rawBlock: string;
 };
+
+export type ATSReport = {
+  score?: number;
+  keywordCoverage?: number;
+  formatting?: string;
+  sectionCompleteness?: string;
+  parsability?: string;
+  missingKeywords?: string[];
+  suggestions?: string[];
+};
+
+export type CandidateProfile = {
+  resumeFileName: string | null;
+  resumeText: string | null;
+  resumeAnalysis: string | null;
+  analysisTimestamp: number | null;
+  // derived / convenience (populated from normalizer or direct counts)
+  skills: string[];
+  atsScore?: number;
+};
