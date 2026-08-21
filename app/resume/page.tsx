@@ -29,7 +29,11 @@ export default function ResumePage() {
   });
 
   const upload = async () => {
-    if (!file || !sessionId || !userId) return;
+    console.log("[DIAG][FE] upload click", { file: file?.name, size: file?.size, type: file?.type, sessionId: sessionId?.slice(0, 8), userId: userId?.slice(0, 8) });
+    if (!file || !sessionId || !userId) {
+      console.warn("[DIAG][FE] missing file/session", { file: !!file, sessionId: !!sessionId, userId: !!userId });
+      return;
+    }
     setStatus("uploading");
     setError(null);
     try {
@@ -37,13 +41,17 @@ export default function ResumePage() {
       form.set("file", file);
       form.set("session_id", sessionId);
       form.set("user_id", userId);
+      console.log("[DIAG][FE] POST /api/resume FormData", { fileName: file.name, fileSize: file.size });
       setStatus("processing");
       const res = await fetch("/api/resume", { method: "POST", body: form });
+      console.log("[DIAG][FE] /api/resume response", res.status, res.statusText);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Upload failed");
+      console.log("[DIAG][FE] /api/resume body", { ok: res.ok, hasResponse: !!data.response, error: data.error, code: (data as { code?: string }).code });
+      if (!res.ok) throw new Error(data.details ? `${data.error} (${(data as { code?: string }).code ?? ""})` : data.error || "Upload failed");
       setResult(data.response);
       setStatus("done");
     } catch (e) {
+      console.error("[DIAG][FE] upload error", e);
       setError(e instanceof Error ? e.message : String(e));
       setStatus("error");
     }

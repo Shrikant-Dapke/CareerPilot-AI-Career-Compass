@@ -14,13 +14,19 @@ export type LyzrChatResponse = {
 
 // Shape confirmed from Lyzr Studio docs: POST /v3/inference/chat with x-api-key
 // Body: { agent_id, session_id, user_id, message }
-// If Lyzr uses different field casing we isolate the mapping here.
 export async function chatWithDirector(req: LyzrChatRequest): Promise<LyzrChatResponse> {
+  console.log("[DIAG] chatWithDirector: start", {
+    hasEnv: !!process.env.LYZR_API_KEY,
+    agentIdPrefix: (process.env.LYZR_AGENT_ID || "").slice(0, 6),
+    session_id: req.session_id.slice(0, 8),
+    messageLen: req.message.length,
+  });
   const env = getEnv();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
 
   try {
+    console.log("[DIAG] chatWithDirector: fetch ->", env.LYZR_API_URL);
     const res = await fetch(env.LYZR_API_URL, {
       method: "POST",
       headers: {
@@ -36,18 +42,26 @@ export async function chatWithDirector(req: LyzrChatRequest): Promise<LyzrChatRe
       signal: controller.signal,
     });
 
+    console.log("[DIAG] chatWithDirector: response status", res.status, res.statusText);
+    const rawBody = await res.text();
+    console.log("[DIAG] chatWithDirector: rawBody snippet", rawBody.slice(0, 800));
+
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
       if (res.status === 401 || res.status === 403) {
-        throw new LyzrError("LYZR_AUTH", "CareerPilot is misconfigured. Contact support.", res.status, text);
+        throw new LyzrError("LYZR_AUTH", "CareerPilot is misconfigured. Contact support.", res.status, rawBody.slice(0, 1000));
       }
       if (res.status === 429) {
-        throw new LyzrError("LYZR_RATE_LIMIT", "Too many requests. Please try again shortly.", res.status, text);
+        throw new LyzrError("LYZR_RATE_LIMIT", "Too many requests. Please try again shortly.", res.status, rawBody.slice(0, 1000));
       }
-      throw new LyzrError("LYZR_API", `Lyzr API error (${res.status})`, res.status, text);
+      throw new LyzrError("LYZR_API", `Lyzr API error (${res.status})`, res.status, rawBody.slice(0, 1000));
     }
 
-    const data = (await res.json().catch(async () => ({ response: await res.text() }))) as Record<string, unknown>;
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(rawBody) as Record<string, unknown>;
+    } catch {
+      data = { response: rawBody } as Record<string, unknown>;
+    }
 
     // Normalize possible field names: response | message | output | data
     const response =
@@ -58,22 +72,28 @@ export async function chatWithDirector(req: LyzrChatRequest): Promise<LyzrChatRe
       (typeof data === "string" ? (data as unknown as string) : "");
 
     if (!response || typeof response !== "string") {
-      // Some Lyzr variants wrap in data.response or choices
       const maybeChoices = (data as { choices?: Array<{ message?: { content?: string } }> }).choices;
       if (maybeChoices?.[0]?.message?.content) {
+        console.log("[DIAG] chatWithDirector: using choices fallback");
         return { response: maybeChoices[0].message.content, session_id: req.session_id };
       }
+      console.error("[DIAG] chatWithDirector: empty response", JSON.stringify(data).slice(0, 2000));
       if (!response) throw new LyzrError("LYZR_EMPTY", "No response received. Try rephrasing.", 502, JSON.stringify(data).slice(0, 2000));
     }
 
+    console.log("[DIAG] chatWithDirector: success, responseLen", (response as string).length);
     return { response: response as string, session_id: (data.session_id as string) ?? req.session_id };
   } catch (err) {
-    if (err instanceof LyzrError) throw err;
+    if (err instanceof LyzrError) {
+      console.error("[DIAG] chatWithDirector: LyzrError", err.code, err.status, err.message, err.details.slice(0, 500));
+      throw err;
+    }
     if (err instanceof DOMException && err.name === "AbortError") {
+      console.error("[DIAG] chatWithDirector: timeout");
       throw new LyzrError("LYZR_TIMEOUT", "Career Compass is taking too long. Please retry.", 504, "");
     }
     const msg = err instanceof Error ? err.message : String(err);
-    // Avoid leaking internal details
+    console.error("[DIAG] chatWithDirector: network/error", msg.slice(0, 800));
     if (msg.includes("Missing/invalid env")) throw err;
     throw new LyzrError("LYZR_NETWORK", "Cannot reach CareerPilot. Check connection.", 502, msg.slice(0, 1000));
   } finally {
@@ -103,39 +123,75 @@ export type SendResumeParams = {
 };
 
 /**
- * Strategy A: send raw text extraction as a chat message with [RESUME] prefix.
- * Strategy B (future): if Lyzr exposes POST /v3/files/upload or multipart /chat,
+ * Strategy: extract text then send as chat message with [RESUME] prefix.
+ * Future: if Lyzr exposes POST /v3/files/upload or multipart /chat,
  * extend this function to try that first and fall back to text extraction.
  * UI calls only this function.
  */
 export async function sendResumeToDirector(params: SendResumeParams): Promise<LyzrChatResponse> {
-  const text = await extractTextFromBuffer(params.fileBuffer, params.mimeType, params.fileName);
+  console.log("[DIAG] sendResumeToDirector: start", {
+    fileName: params.fileName,
+    mimeType: params.mimeType,
+    bufferLen: params.fileBuffer.length,
+    session_id: params.session_id.slice(0, 8),
+  });
+  let text: string;
+  try {
+    text = await extractTextFromBuffer(params.fileBuffer, params.mimeType, params.fileName);
+    console.log("[DIAG] sendResumeToDirector: extracted textLen", text.length, "preview", text.slice(0, 200).replace(/\n/g, " "));
+  } catch (e) {
+    console.error("[DIAG] sendResumeToDirector: extraction threw", e instanceof Error ? e.message : String(e));
+    throw new LyzrError("RESUME_PARSE_ERROR", `Resume extraction failed: ${e instanceof Error ? e.message : String(e)}`, 500, "");
+  }
   if (!text || text.trim().length < 20) {
-    throw new LyzrError("RESUME_EMPTY", "Could not read resume text. Try a different PDF/DOCX export.", 400, "");
+    console.error("[DIAG] sendResumeToDirector: extracted too short", text.length);
+    throw new LyzrError("RESUME_EMPTY", "Could not read resume text. Try a different PDF/DOCX export.", 400, `extractedLen=${text.length}`);
   }
   const message = `[RESUME UPLOAD: ${params.fileName}]\n\n${text.slice(0, 15000)}\n\nPlease analyze this resume and provide a structured assessment (skills, experience, education, projects, strengths, gaps, and overall summary).`;
+  console.log("[DIAG] sendResumeToDirector: calling chatWithDirector messageLen", message.length);
   return chatWithDirector({ message, session_id: params.session_id, user_id: params.user_id });
 }
 
 async function extractTextFromBuffer(buffer: Buffer, mimeType: string, fileName: string): Promise<string> {
   const lower = fileName.toLowerCase();
+  console.log("[DIAG] extractTextFromBuffer: entry", { lower, mimeType, bufLen: buffer.length });
   if (lower.endsWith(".pdf") || mimeType === "application/pdf") {
-    const mod = (await import("pdf-parse")) as unknown as { default?: (b: Buffer) => Promise<{ text: string }> } & ((b: Buffer) => Promise<{ text: string }>);
-    const pdfParse = (mod.default ?? mod) as (b: Buffer) => Promise<{ text: string }>;
-    const data = await pdfParse(buffer);
-    return data.text ?? "";
+    try {
+      const { PDFParse } = await import("pdf-parse");
+      const dataBytes = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
+      const parser = new PDFParse({ data: dataBytes as Uint8Array });
+      await (parser as unknown as { load: () => Promise<void> }).load();
+      const result = await parser.getText();
+      const text = (result as { text: string }).text ?? "";
+      await parser.destroy().catch(() => {});
+      console.log("[DIAG] extractTextFromBuffer: pdf textLen", text.length);
+      return text;
+    } catch (e) {
+      console.error("[DIAG] extractTextFromBuffer: pdf-parse failed", e instanceof Error ? e.message : String(e));
+      throw e;
+    }
   }
   if (lower.endsWith(".docx") || mimeType.includes("officedocument.wordprocessingml")) {
-    const mammoth = await import("mammoth");
-    const result = await mammoth.extractRawText({ buffer });
-    return result.value ?? "";
+    try {
+      const mammoth = await import("mammoth");
+      const result = await mammoth.extractRawText({ buffer });
+      const text = result.value ?? "";
+      console.log("[DIAG] extractTextFromBuffer: docx textLen", text.length);
+      return text;
+    } catch (e) {
+      console.error("[DIAG] extractTextFromBuffer: mammoth failed", e instanceof Error ? e.message : String(e));
+      throw e;
+    }
   }
   // Fallback: try pdf then docx
   try {
-    const mod = (await import("pdf-parse")) as unknown as { default?: (b: Buffer) => Promise<{ text: string }> } & ((b: Buffer) => Promise<{ text: string }>);
-    const pdfParse = (mod.default ?? mod) as (b: Buffer) => Promise<{ text: string }>;
-    const data = await pdfParse(buffer);
-    if (data.text?.trim()) return data.text;
+    const { PDFParse } = await import("pdf-parse");
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+    await (parser as unknown as { load: () => Promise<void> }).load();
+    const result = await parser.getText();
+    const text = (result as { text: string }).text ?? "";
+    await parser.destroy().catch(() => {});
+    if (text.trim()) return text;
   } catch {}
   try {
     const mammoth = await import("mammoth");
