@@ -164,9 +164,15 @@ async function extractTextFromBuffer(buffer: Buffer, mimeType: string, fileName:
   console.log("[LYZR] extract entry", { lower, mimeType, bufLen: buffer.length });
   if (lower.endsWith(".pdf") || mimeType === "application/pdf") {
     try {
-      const { PDFParse } = await import("pdf-parse");
+      // Recommended Vercel fix: initialize worker CanvasFactory before PDFParse
+      // This sets global.DOMMatrix / Path2D / ImageData via @napi-rs/canvas and
+      // prevents "DOMMatrix is not defined" in serverless runtime.
+      const [{ PDFParse }, { CanvasFactory }] = await Promise.all([
+        import("pdf-parse"),
+        import("pdf-parse/worker"),
+      ]);
       const dataBytes = buffer instanceof Buffer ? new Uint8Array(buffer) : buffer;
-      const parser = new PDFParse({ data: dataBytes as Uint8Array });
+      const parser = new PDFParse({ data: dataBytes as Uint8Array, CanvasFactory } as unknown as { data: Uint8Array });
       await (parser as unknown as { load: () => Promise<void> }).load();
       const result = await parser.getText();
       const text = (result as { text: string }).text ?? "";
@@ -192,8 +198,11 @@ async function extractTextFromBuffer(buffer: Buffer, mimeType: string, fileName:
   }
   // Fallback: try pdf then docx
   try {
-    const { PDFParse } = await import("pdf-parse");
-    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+    const [{ PDFParse }, { CanvasFactory }] = await Promise.all([
+      import("pdf-parse"),
+      import("pdf-parse/worker"),
+    ]);
+    const parser = new PDFParse({ data: new Uint8Array(buffer), CanvasFactory } as unknown as { data: Uint8Array });
     await (parser as unknown as { load: () => Promise<void> }).load();
     const result = await parser.getText();
     const text = (result as { text: string }).text ?? "";
